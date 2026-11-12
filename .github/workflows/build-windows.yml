@@ -1,0 +1,113 @@
+# Builds SCC Player Cam (PlayerCam.exe, the players' webcam app) on Windows and
+# publishes it as a GitHub release (v2.0.<run number>, or the next free one)
+# with PlayerCam-windows.zip and SCC-Player-Cam-Setup.exe.
+# Versions start at 2.0 because Player Cam used to ship with the League HUD
+# (up to v1.0.89); 2.0 keeps those installs updating to this repo's releases.
+#
+# A commit with [no release] in its message builds and tests without publishing.
+name: Build Windows app
+
+on:
+  push:
+    branches: [main, "claude/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-windows
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pick the version
+        shell: pwsh
+        run: |
+          $tags = git ls-remote --tags origin | ForEach-Object { ($_ -split 'refs/tags/')[1] }
+          $n = ${{ github.run_number }}
+          while ($tags -contains "v2.0.$n") { $n++ }
+          "VERSION=v2.0.$n" >> $env:GITHUB_ENV
+          Write-Host "Version v2.0.$n"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller -r requirements-windows.txt
+
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Stamp the version
+        shell: pwsh
+        run: |
+          Set-Content playercam/version.py "VERSION = `"$env:VERSION`"" -Encoding utf8
+          Get-Content playercam/version.py
+
+      - name: Build PlayerCam.exe
+        run: pyinstaller --noconfirm PlayerCam.spec
+
+      - name: Smoke test the built app
+        shell: pwsh
+        run: |
+          $app = "dist\PlayerCam"
+          $p = Start-Process "$app\PlayerCam.exe" -ArgumentList '--smoke-test' -PassThru -Wait
+          Get-Content "$app\smoke-test.txt"
+          if ($p.ExitCode -ne 0) { throw "Smoke test failed (exit code $($p.ExitCode))" }
+          Remove-Item "$app\smoke-test.txt", "$app\config.json" -ErrorAction SilentlyContinue
+          Remove-Item "$app\_update" -Recurse -ErrorAction SilentlyContinue
+
+      - name: Add readme and version.txt
+        shell: pwsh
+        run: |
+          Copy-Item README.md dist\PlayerCam\
+          Set-Content dist\PlayerCam\version.txt $env:VERSION -NoNewline
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PlayerCam-windows
+          path: dist/PlayerCam
+
+      - name: Build the installer
+        if: "!contains(github.event.head_commit.message, '[no release]')"
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup --no-progress -y | Out-Null }
+          & $iscc "/DAppVersion=$($env:VERSION.TrimStart('v'))" installer\SCC-Player-Cam.iss
+          if ($LASTEXITCODE) { exit 1 }
+
+      - name: Publish release
+        if: "!contains(github.event.head_commit.message, '[no release]')"
+        shell: pwsh
+        run: |
+          foreach ($f in "config.json", "webview", "_update") {
+            if (Test-Path "dist\PlayerCam\$f") { throw "Test leftover in the app: $f" }
+          }
+          Compress-Archive -Path dist\PlayerCam\* -DestinationPath PlayerCam-windows.zip
+          $notes = git log -1 --format=%B | Where-Object { $_ -notmatch '^(Co-Authored-By|Claude-Session):' }
+          $notes = ($notes -join "`n").Trim()
+          gh release create "$env:VERSION" PlayerCam-windows.zip dist\SCC-Player-Cam-Setup.exe --target "${{ github.sha }}" --title "SCC Player Cam $env:VERSION" --notes "$notes"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Test the installer (silent; it installs the release just published)
+        if: "!contains(github.event.head_commit.message, '[no release]')"
+        shell: pwsh
+        run: |
+          $dir = "$env:RUNNER_TEMP\PlayerCam test"
+          $installArgs = '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$dir`"", '/MERGETASKS="!desktopicon"', '/LOG=install.log'
+          $p = Start-Process "dist\SCC-Player-Cam-Setup.exe" -ArgumentList $installArgs -PassThru -Wait
+          Get-Content install.log -Tail 25
+          if ($p.ExitCode -ne 0) { throw "Setup failed (exit code $($p.ExitCode))" }
+          if (-not (Test-Path "$dir\PlayerCam.exe")) { throw "PlayerCam.exe wasn't installed" }
+          if (-not (Test-Path "$dir\_internal")) { throw "_internal wasn't installed" }
+          Write-Host "Installed OK to $dir"

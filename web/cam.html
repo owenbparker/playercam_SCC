@@ -1,0 +1,847 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="icon" href="assets/playercam_icon.png">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SCC Player Cam</title>
+<!-- Player Cam: sends a player's webcam straight to the HUD on the GFX PC
+     (peer to peer over the local network, for the least delay).
+
+     Two ways in:
+       - in a browser, from the GFX PC: https://<GFX PC>:8779/cam (browsers
+         only allow the camera on secure pages, so it's https; plain http
+         links forward there);
+       - in the SCC Player Cam app (/cam?app=1, served by the app on this PC),
+         which asks for the GFX PC's address. -->
+<style>
+  @font-face { font-family: "Inter"; src: url("fonts/Inter.ttf") format("truetype"); font-weight: 100 900; }
+  :root { --bg: #0e1012; --panel: #171a1d; --line: #2a2f34; --text: #e8eaed; --muted: #8b939b; --accent: #31c392; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 "Inter", system-ui, sans-serif; }
+  header { display: flex; align-items: center; gap: 14px; height: 54px; padding: 0 18px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  header h1 { margin: 0; font-size: 16px; font-weight: 700; }
+  header span { color: var(--muted); }
+  header .right { margin-left: auto; display: flex; align-items: center; gap: 14px; }
+  header a { color: var(--muted); text-decoration: none; font-size: 13px; }
+  header a:hover { color: var(--text); }
+  main { min-height: calc(100% - 54px); display: grid; place-items: center; padding: 16px; }
+  .wrap { display: grid; grid-template-columns: minmax(0, 420px) minmax(0, 420px); gap: 16px; width: min(880px, 100%); }
+  @media (max-width: 760px) { .wrap { grid-template-columns: 1fr; } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 20px; }
+  label { display: block; margin: 14px 0 6px; color: var(--muted); font-size: 12px; }
+  label:first-child { margin-top: 0; }
+  input, select { width: 100%; padding: 10px 12px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; font: inherit; }
+  input:focus, select:focus { outline: none; border-color: var(--accent); }
+  .row { display: flex; gap: 10px; }
+  .row > * { flex: 1; }
+  .seg { display: flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  .seg button { flex: 1; border: 0; padding: 10px 8px; background: transparent; color: var(--muted); font: inherit; cursor: pointer; }
+  .seg button + button { border-left: 1px solid var(--line); }
+  .seg button.on { background: var(--accent); color: #06231a; font-weight: 600; }
+  .roles button { font-size: 12px; padding: 8px 4px; line-height: 1.25; }
+  .roles small { display: block; font-size: 11px; opacity: .8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .status { min-height: 20px; margin-top: 12px; font-size: 12px; color: var(--muted); }
+  .status.ok { color: var(--accent); }
+  .status.bad { color: #ffcf66; }
+  .preview { position: relative; aspect-ratio: 174 / 259; max-height: 60vh; margin: 0 auto; background: #000; border-radius: 8px; overflow: hidden; }
+  .preview video { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+  .preview .live { position: absolute; top: 10px; left: 10px; padding: 3px 8px; border-radius: 4px; font: 700 11px "Inter", sans-serif;
+                   letter-spacing: .06em; background: rgba(0,0,0,.6); color: var(--muted); }
+  .preview .live.on { background: #d6243a; color: #fff; }
+  .note { color: var(--muted); font-size: 12px; margin: 12px 0 0; }
+  .cam-line { align-items: center; }
+  .cam-line .status:empty { display: none; }
+  .retry { flex: 0 0 auto !important; margin-top: 12px; padding: 6px 12px; background: #252a2f; color: var(--text);
+           border: 1px solid var(--line); border-radius: 6px; font: inherit; cursor: pointer; }
+  body:not(.app) .app-only { display: none !important; }
+  .update { padding: 6px 12px; background: var(--accent); color: #06231a; border: 0; border-radius: 6px; font: 700 13px "Inter", system-ui, sans-serif; cursor: pointer; }
+  .update[disabled] { background: #2c3a35; color: var(--text); cursor: default; }
+  .update.error { background: #6b2a2a; color: #fff; }
+  .version { font-size: 12px; color: var(--muted); }
+  .update.check { background: #252a2f; color: var(--text); border: 1px solid var(--line); font-weight: 600; }
+
+  /* The game picker (the app opens on it). */
+  #picker { min-height: calc(100% - 54px); display: grid; place-items: center; padding: 24px; }
+  #picker .games { display: flex; gap: 24px; flex-wrap: wrap; justify-content: center; }
+  #picker button { width: 300px; height: 190px; display: grid; place-items: center; padding: 34px; cursor: pointer;
+                   background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+                   transition: border-color .15s, transform .15s, background .15s; }
+  #picker button:hover, #picker button:focus-visible { border-color: var(--accent); background: #1c2024; transform: translateY(-2px); outline: none; }
+  #picker button img { width: 232px; height: 122px; object-fit: contain; display: block; }
+  body.picking main, body:not(.picking) #picker { display: none; }
+  #switch-game { display: flex; align-items: center; height: 30px; padding: 4px 10px; background: transparent;
+                 border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
+  #switch-game img { height: 20px; }
+  #switch-game:hover { border-color: var(--accent); }
+  body.picking #switch-game { display: none; }
+  body:not(.game-lol) .lol-only, body:not(.game-val) .val-only, body:not(.game-cod) .cod-only, body:not(.game-rl) .rl-only { display: none !important; }
+  .riot-row { display: flex; gap: 8px; margin-top: 8px; }
+  .riot-row button { flex: 0 0 auto; padding: 8px 12px; border-radius: 6px; font: 600 13px "Inter", system-ui, sans-serif; cursor: pointer;
+                     background: #d13639; color: #fff; border: 0; }
+  .riot-row button:hover { background: #e2474a; }
+  .connected { display: inline-flex; align-items: center; gap: 8px; margin-top: 14px; padding: 8px 14px; border-radius: 6px;
+               background: rgba(49,195,146,.14); color: var(--accent); font-weight: 700; font-size: 15px; }
+  .connected::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+  .connected[hidden] { display: none; }
+  .find-row { display: flex; gap: 8px; align-items: stretch; }
+  .find-row input { flex: 1; min-width: 0; }
+  .find-row button, .found button { flex: 0 0 auto; white-space: nowrap; padding: 8px 14px; border-radius: 6px; cursor: pointer;
+                                   font: 600 13px "Inter", system-ui, sans-serif; background: #252a2f; color: var(--text); border: 1px solid var(--line); }
+  .find-row button:hover, .found button:hover { border-color: var(--muted); }
+  .find-row button[disabled] { opacity: .6; cursor: progress; }
+  .found { display: grid; gap: 6px; margin-top: 8px; }
+  .found[hidden] { display: none; }
+  .found button { text-align: left; }
+  .found button small { color: var(--muted); margin-left: 8px; }
+  body.game-val .preview { aspect-ratio: 16 / 9; }
+  body.game-cod .preview { aspect-ratio: 175 / 130; }
+</style>
+</head>
+<body>
+<header>
+  <h1>SCC Player Cam</h1><span id="hud-name"></span>
+  <button id="switch-game" class="app-only" title="Change game"><img id="game-logo" alt=""></button>
+  <div class="right app-only">
+    <button id="update" class="update" hidden></button>
+    <span class="version" id="version"></span>
+  </div>
+</header>
+<div id="picker">
+  <div class="games">
+    <button data-game="lol" title="League of Legends"><img src="assets/games/lol.svg" alt="League of Legends"></button>
+    <button data-game="val" title="VALORANT"><img src="assets/games/valorant.svg" alt="VALORANT"></button>
+    <button data-game="cod" title="Call of Duty"><img src="assets/games/cod.svg" alt="Call of Duty"></button>
+    <button data-game="rl" title="Rocket League"><img src="assets/games/rl.svg" alt="Rocket League"></button>
+  </div>
+</div>
+<main>
+  <div class="wrap">
+    <section>
+      <label for="gfx" class="app-only">GFX PC address</label>
+      <div class="row find-row app-only"><input id="gfx" spellcheck="false" placeholder="192.168.2.40">
+        <button id="find" type="button">Connect to HUD</button></div>
+      <div class="found app-only" id="found" hidden></div>
+      <label class="lol-only">Team</label>
+      <div class="seg lol-only" id="team"><button data-side="left">Left team</button><button data-side="right">Right team</button></div>
+      <label class="lol-only">Player</label>
+      <div class="seg roles lol-only" id="role"></div>
+      <label for="riot-id" class="val-only">Riot ID</label>
+      <input id="riot-id" class="val-only" spellcheck="false" autocomplete="off" placeholder="Name#TAG">
+      <label for="cod-name" class="cod-only">In-game name</label>
+      <input id="cod-name" class="cod-only" spellcheck="false" autocomplete="off" placeholder="Your name in Call of Duty">
+      <label for="rl-name" class="rl-only">In-game name</label>
+      <input id="rl-name" class="rl-only" spellcheck="false" autocomplete="off" placeholder="Your name in Rocket League (Epic / Steam)">
+      <div class="riot-row val-only app-only"><button id="riot-sign-in" type="button">Sign in with Riot</button>
+        <div class="status" id="riot-status" style="margin:0;align-self:center"></div></div>
+      <label for="camera">Camera</label>
+      <select id="camera"></select>
+      <div class="row cam-line"><div class="status" id="cam-status"></div><button id="cam-retry" class="retry" hidden>Try again</button></div>
+      <div class="connected" id="connected" hidden>Connected</div>
+      <div class="status" id="status"></div>
+      <p class="note"><span class="app-only">Ask the GFX operator to tick "Let other PCs on the network read the HUD".</span>
+        Keep this <span id="window-word">window</span> open while you play (it can be minimised). Your cam shows on the
+        HUD when <span class="lol-only">the action is on you</span><span class="val-only">the observer is spectating you</span><span class="cod-only">the observer is spectating you</span><span class="rl-only">the observer is spectating you</span>.</p>
+    </section>
+    <section>
+      <div class="preview"><video id="preview" autoplay muted playsinline></video><span class="live" id="live">OFF AIR</span></div>
+    </section>
+  </div>
+</main>
+<script src="update.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+// In the app, this page is served on this PC and talks to the GFX PC's
+// address; in a browser, it comes from the GFX PC itself.
+const APP = new URLSearchParams(location.search).has("app");
+document.body.classList.toggle("app", APP);
+if (!APP) $("window-word").textContent = "tab";
+const ROLES = ["Top", "Jungle", "Mid", "Bot", "Support"];
+const showUpdate = updateButton($("update"), $("version"));
+const store = (k, v) => { try { v === undefined ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch (e) {} };
+const stored = k => { try { return localStorage.getItem(k); } catch (e) { return null; } };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+const ME = Math.random().toString(16).slice(2, 18);
+let base = "", seat = stored("camSeat") || "", claim = !!seat, stream = null, teams = null, online = false;
+// The game: the app asks on launch; in a browser the page comes from the
+// League HUD itself. Each game's HUD app has its own address and port.
+const GAMES = { lol: { port: 8777, logo: "assets/games/lol.svg" }, val: { port: 8778, logo: "assets/games/valorant.svg" },
+                cod: { port: 8780, logo: "assets/games/cod.svg" }, rl: { port: 8781, logo: "assets/games/rl.svg" } };
+// VALORANT and Call of Duty cams connect by the player's name in the game
+// (their Riot ID; their in-game name), not by a seat.
+const byName = () => GAME === "val" || GAME === "cod" || GAME === "rl";
+// (where each game's name is kept on this PC)
+const NAME_KEY = { val: "camRiotId", cod: "camCodName", rl: "camRlName" };
+let GAME = APP ? "" : "lol";
+let riotId = stored("camRiotId") || "", matched = null;   // (in Call of Duty: their in-game name)
+const viewers = {};  // overlay id -> RTCPeerConnection
+
+// --- staying light on the player's PC ------------------------------------------
+// The cam is shown small on the HUD (League 174x259, VALORANT 300x171), so
+// the camera is opened at 640x360 (no bigger picture to copy or squeeze each
+// frame), sent at no more than 30 fps, and H.264 is asked for first, which
+// the graphics card encodes (VP8, the default, takes the processor). A
+// bigger picture is only asked of the camera while the control room zooms in.
+const SEND = { width: 640, fps: 30, bitrate: 1000000, previewBitrate: 300000 };
+const camSize = zoom => (zoom > 1.001 ? { width: 1280, height: 720 } : { width: 640, height: 360 });
+
+// "192.168.2.40", "http://192.168.2.40:8777/overlay" -> "http://192.168.2.40:8777"
+function gfxBase(text) {
+  text = (text || "").trim();
+  if (!text) return "";
+  if (!/^https?:\/\//i.test(text)) text = "http://" + text;
+  try {
+    const u = new URL(text);
+    return `${u.protocol}//${u.hostname}:${u.port || GAMES[GAME || "lol"].port}`;
+  } catch (e) { return ""; }
+}
+
+function status(text, kind) {
+  $("status").textContent = text;
+  $("status").className = "status " + (kind || "");
+  $("connected").hidden = kind !== "ok";
+}
+
+function drawSeat() {
+  const [side, slot] = seat ? seat.split("-") : ["", ""];
+  for (const b of $("team").children) {
+    b.classList.toggle("on", b.dataset.side === side);
+    const t = teams && teams[b.dataset.side];
+    b.textContent = t ? `${t.name} (${t.tricode})` : (b.dataset.side === "left" ? "Left team" : "Right team");
+  }
+  const names = (teams && side && teams[side].players) || [];
+  $("role").innerHTML = ROLES.map((r, i) =>
+    `<button data-slot="${i + 1}" class="${String(i + 1) === slot ? "on" : ""}">${r}<small>${names[i] || "&nbsp;"}</small></button>`).join("");
+  for (const b of $("role").children) b.onclick = () => pickSeat(side || "left", b.dataset.slot);
+  const viewing = Object.values(viewers).filter(pc => pc.connectionState === "connected").length;
+  $("live").classList.toggle("on", viewing > 0);
+  $("live").textContent = viewing ? "ON THE HUD" : "OFF AIR";
+}
+
+function pickSeat(side, slot) {
+  seat = `${side}-${slot || (seat.split("-")[1] || 1)}`;
+  claim = true;
+  store("camSeat", seat);
+  drawSeat();
+  wake();
+}
+for (const b of $("team").children) b.onclick = () => pickSeat(b.dataset.side, seat.split("-")[1]);
+
+// --- the camera --------------------------------------------------------------
+function camStatus(text, kind) {
+  $("cam-status").textContent = text || "";
+  $("cam-status").className = "status " + (kind || "");
+  $("cam-retry").hidden = kind !== "bad";
+}
+
+async function listCameras(current) {
+  try {
+    const devices = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "videoinput");
+    $("camera").innerHTML = devices.length
+      ? devices.map((d, i) => `<option value="${d.deviceId}">${d.label || "Camera " + (i + 1)}</option>`).join("")
+      : '<option value="">No camera found</option>';
+    if (current) $("camera").value = current;
+    return devices;
+  } catch (e) { return []; }
+}
+
+async function openCamera(deviceId) {
+  if (!window.isSecureContext || !navigator.mediaDevices) {
+    camStatus(APP ? "This app can't use the camera." : "The camera needs the https link to this page: ask the GFX operator for it.", "bad");
+    return;
+  }
+  camStatus("Opening the camera…");
+  // (pan / tilt / zoom: asks for the camera's own, where it has them, for
+  // the GFX Engine's Camera Control Room)
+  const size = camSize(((loadJson("camLook-" + (deviceId || "")) || {}).zoom || {}).value || 1);
+  const video = (id, ptz = true) => ({ audio: false, video: { deviceId: id ? { exact: id } : undefined,
+                                                 width: { ideal: size.width }, height: { ideal: size.height },
+                                                 frameRate: { ideal: SEND.fps, max: SEND.fps },
+                                                 ...(ptz ? { pan: true, tilt: true, zoom: true } : {}) } });
+  let next = null, error = null;
+  try { next = await navigator.mediaDevices.getUserMedia(video(deviceId)); } catch (e) { /* again without, below */ }
+  if (!next) try { next = await navigator.mediaDevices.getUserMedia(video(deviceId, false)); }
+  catch (e) {
+    error = e;
+    // The camera picked last time may be unplugged: take any camera instead.
+    if (deviceId && (e.name === "OverconstrainedError" || e.name === "NotFoundError")) {
+      try { next = await navigator.mediaDevices.getUserMedia(video("")); error = null; } catch (e2) { error = e2; }
+    }
+  }
+  if (!next) {
+    const devices = await listCameras();
+    const why = { NotAllowedError: "camera access was blocked. Allow it, then Try again.",
+                  NotReadableError: "another app is using it (Teams, Discord, OBS...). Close that, then Try again.",
+                  NotFoundError: "no camera is plugged in." }[error && error.name];
+    camStatus(`Couldn't open the camera: ${why || `${error && (error.message || error.name)}. Check Windows Settings > Privacy & security > Camera lets desktop apps use it`}`
+              + (devices.length ? "" : " (Windows sees no camera)"), "bad");
+    return;
+  }
+  const track = next.getVideoTracks()[0];
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  stream = next;
+  store("camDevice", track.getSettings().deviceId || "");
+  await restoreLook();
+  sendTrack();
+  await listCameras(track.getSettings().deviceId || "");
+  camStatus("");
+}
+$("camera").onchange = e => openCamera(e.target.value);
+$("cam-retry").onclick = () => openCamera($("camera").value || stored("camDevice"));
+
+// --- camera settings: the GFX Engine's Camera Control Room ------------------------
+// The control room sends {type: "camctl", get / set / reset} through the HUD;
+// this page sets the camera and answers with its settings ("camstate"). The
+// browser sets most of them on the camera itself; in the app, the camera's
+// driver does the rest (gain, backlight...: lolhud/camprops.py). A camera
+// with no zoom of its own gets a digital one: the picture sent is cropped.
+// What's set is kept per camera on this PC and set again when it's opened.
+const PC_ID = stored("camPcId") || Math.random().toString(16).slice(2, 14);
+store("camPcId", PC_ID);
+// key: [label, group, browser setting, its mode setting]
+const BROWSER = {
+  wb: ["White balance", "light", "colorTemperature", "whiteBalanceMode"],
+  exposure: ["Exposure", "light", "exposureTime", "exposureMode"],
+  exposureCompensation: ["Exposure compensation", "light", "exposureCompensation"],
+  brightness: ["Brightness", "light", "brightness"],
+  contrast: ["Contrast", "light", "contrast"],
+  saturation: ["Saturation", "light", "saturation"],
+  sharpness: ["Sharpness", "light", "sharpness"],
+  focus: ["Focus", "framing", "focusDistance", "focusMode"],
+  zoom: ["Zoom", "framing", "zoom"],
+  pan: ["Pan", "framing", "pan"],
+  tilt: ["Tilt", "framing", "tilt"],
+};
+// The driver's names (lolhud/camprops.py) -> key, label, group.
+const DRIVER = {
+  gain: ["gain", "Gain (ISO)", "light"], whitebalance: ["wb", "White balance", "light"],
+  exposure: ["exposure", "Exposure", "light"], brightness: ["brightness", "Brightness", "light"],
+  contrast: ["contrast", "Contrast", "light"], saturation: ["saturation", "Saturation", "light"],
+  sharpness: ["sharpness", "Sharpness", "light"], hue: ["hue", "Hue", "light"], gamma: ["gamma", "Gamma", "light"],
+  backlight: ["backlight", "Backlight compensation", "light"], powerline: ["powerline", "Anti-flicker", "light"],
+  focus: ["focus", "Focus", "framing"], zoom: ["zoom", "Zoom", "framing"], pan: ["pan", "Pan", "framing"], tilt: ["tilt", "Tilt", "framing"],
+};
+const ORDER = ["wb", "exposure", "gain", "exposureCompensation", "brightness", "contrast", "saturation", "sharpness",
+               "hue", "gamma", "backlight", "powerline", "zoom", "pan", "tilt", "focus"];
+const CAN_CROP = typeof MediaStreamTrackProcessor === "function" && typeof MediaStreamTrackGenerator === "function"
+  && typeof VideoFrame === "function";
+let view = { zoom: 1, pan: 0, tilt: 0 };   // the digital zoom
+let crop = null;                            // { track, stop } while it's cropping
+let driverKeys = {};                        // key -> the driver's name, for this camera
+let driverError = "";                       // why the driver gave nothing (shown in the control room)
+
+const rawTrack = () => stream && stream.getVideoTracks()[0];
+const outTrack = () => (crop ? crop.track : rawTrack());
+const deviceKey = () => { const t = rawTrack(); return t ? (t.getSettings().deviceId || t.label) : ""; };
+const loadJson = k => { try { return JSON.parse(stored(k) || "null"); } catch (e) { return null; } };
+
+function sendTrack() {
+  const t = outTrack();
+  if (!t) return;
+  for (const pc of Object.values(viewers))
+    for (const sender of pc.getSenders()) if (sender.track && sender.track.kind === "video" && sender.track !== t) sender.replaceTrack(t);
+  showPreview();
+}
+
+// The preview only draws while this window can be seen: minimised, or behind
+// the game, it stops (the cam still goes to the HUD).
+function showPreview() {
+  const t = outTrack(), v = $("preview");
+  if (document.hidden || !t) { if (v.srcObject) v.srcObject = null; return; }
+  if (!v.srcObject || v.srcObject.getVideoTracks()[0] !== t) v.srcObject = new MediaStream([t]);
+}
+document.addEventListener("visibilitychange", showPreview);
+
+// What each viewer is sent: shrunk to SEND.width wide at most (the Camera
+// Control Room's previews: half that), SEND.fps, and a modest bitrate.
+function tuneSender(sender, preview) {
+  const s = rawTrack() ? rawTrack().getSettings() : {};
+  const p = sender.getParameters();
+  p.encodings = p.encodings && p.encodings.length ? p.encodings : [{}];
+  const e = p.encodings[0];
+  e.maxBitrate = preview ? SEND.previewBitrate : SEND.bitrate;
+  e.maxFramerate = SEND.fps;
+  e.scaleResolutionDownBy = Math.max(1, (s.width || SEND.width) / SEND.width) * (preview ? 2 : 1);
+  return sender.setParameters(p).catch(() => {});
+}
+function retune() {
+  for (const pc of Object.values(viewers)) for (const sender of pc.getSenders()) if (sender.track) tuneSender(sender, pc.preview);
+}
+
+// H.264 first (the graphics card's encoder, where the viewer can take it),
+// then whatever else both ends have.
+function preferH264(pc) {
+  const caps = window.RTCRtpSender && RTCRtpSender.getCapabilities && RTCRtpSender.getCapabilities("video");
+  if (!caps) return;
+  const rank = c => (/h264/i.test(c.mimeType) ? (/packetization-mode=1/.test(c.sdpFmtpLine || "") ? 0 : 1) : 2);
+  const codecs = caps.codecs.slice().sort((a, b) => rank(a) - rank(b));
+  for (const t of pc.getTransceivers())
+    if (t.sender.track && t.setCodecPreferences) try { t.setCodecPreferences(codecs); } catch (e) { /* as offered */ }
+}
+
+// The digital zoom: each frame cut down to the part in view (no redrawing,
+// and it keeps going with the window minimised).
+function startCrop() {
+  const src = rawTrack();
+  if (crop || !src || !CAN_CROP) return;
+  const even = n => Math.max(0, Math.round(n / 2) * 2);
+  const gen = new MediaStreamTrackGenerator({ kind: "video" });
+  const abort = new AbortController();
+  new MediaStreamTrackProcessor({ track: src }).readable.pipeThrough(new TransformStream({
+    transform(frame, out) {
+      const w = frame.displayWidth, h = frame.displayHeight, z = Math.max(1, view.zoom);
+      if (z <= 1.001) return out.enqueue(frame);
+      const cw = even(w / z), ch = even(h / z);
+      const x = even((w - cw) / 2 * (1 + view.pan / 100)), y = even((h - ch) / 2 * (1 - view.tilt / 100));
+      try { out.enqueue(new VideoFrame(frame, { visibleRect: { x, y, width: cw, height: ch }, displayWidth: w, displayHeight: h })); }
+      catch (e) { return out.enqueue(frame); }
+      frame.close();
+    },
+  }), { signal: abort.signal }).pipeTo(gen.writable, { signal: abort.signal }).catch(() => {});
+  crop = { track: gen, src, stop: () => { abort.abort(); gen.stop(); } };
+}
+function setView(v) {
+  const was = camSize(view.zoom).width;
+  view = { ...view, ...v };
+  const want = view.zoom > 1.001;
+  // (zoomed in: a bigger picture from the camera, so the cut-down part stays sharp)
+  const size = camSize(view.zoom), t = rawTrack();
+  if (t && size.width !== was)
+    t.applyConstraints({ width: { ideal: size.width }, height: { ideal: size.height }, frameRate: { ideal: SEND.fps, max: SEND.fps } })
+      .then(retune).catch(() => {});
+  if (crop && (!want || crop.src !== rawTrack())) { crop.stop(); crop = null; }
+  if (want && !crop) startCrop();
+  sendTrack();
+}
+
+async function driver(set) {
+  const t = rawTrack();
+  if (!APP || !t) return {};
+  try {
+    const r = set
+      ? await fetch("/api/camprops", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ label: t.label, set }) })
+      : await fetch("/api/camprops?label=" + encodeURIComponent(t.label));
+    const data = await r.json();
+    driverError = data.error || "";
+    return data.props || {};
+  } catch (e) { driverError = "couldn't ask the app (" + (e.message || e) + ")"; return {}; }
+}
+
+// Every setting this camera has: [{key, label, group, min, max, step, value,
+// auto (null: no automatic mode), options, digital}]
+async function cameraControls() {
+  const t = rawTrack();
+  if (!t) return [];
+  let caps = t.getCapabilities ? t.getCapabilities() : {};
+  if (!Object.values(BROWSER).some(b => caps[b[2]]) && typeof ImageCapture === "function") {
+    // (the browser reads what the camera has once asked: ask, then look again)
+    try { await new ImageCapture(t).getPhotoCapabilities(); } catch (e) { /* none */ }
+    caps = t.getCapabilities();
+  }
+  const now = t.getSettings();
+  const out = {};
+  for (const [key, [label, group, name, mode]] of Object.entries(BROWSER)) {
+    const c = caps[name];
+    if (!c || !(c.max > c.min)) continue;
+    const modes = mode ? caps[mode] || [] : [];
+    const canAuto = modes.includes("continuous") && modes.includes("manual");
+    out[key] = { key, label, group, min: c.min, max: c.max, step: c.step || 1, value: now[name],
+                 auto: canAuto ? now[mode] === "continuous" : null };
+  }
+  driverKeys = {};
+  for (const [name, p] of Object.entries(await driver())) {
+    const [key, label, group] = DRIVER[name] || [];
+    if (!key || out[key]) continue;   // (the browser's own comes first)
+    // The browser's "exposure compensation" on Windows is the camera's gain:
+    // one slider, the driver's.
+    const ec = out.exposureCompensation;
+    if (name === "gain" && ec && ec.min === p.min && ec.max === p.max) delete out.exposureCompensation;
+    driverKeys[key] = name;
+    out[key] = { key, label, group, min: p.min, max: p.max, step: p.step, value: p.value, auto: p.auto };
+    if (name === "powerline") out[key].options = [[0, "Off"], [1, "50 Hz"], [2, "60 Hz"]].filter(([v]) => v >= p.min && v <= p.max);
+  }
+  if (!out.zoom && CAN_CROP) {
+    out.zoom = { key: "zoom", label: "Zoom", group: "framing", min: 1, max: 4, step: 0.05, value: view.zoom, auto: null, digital: true };
+    if (!out.pan) out.pan = { key: "pan", label: "Pan", group: "framing", min: -100, max: 100, step: 1, value: view.pan, auto: null, digital: true };
+    if (!out.tilt) out.tilt = { key: "tilt", label: "Tilt", group: "framing", min: -100, max: 100, step: 1, value: view.tilt, auto: null, digital: true };
+  }
+  return ORDER.filter(k => out[k]).map(k => out[k]);
+}
+
+// set: {key: {value, auto}}
+async function applySettings(set) {
+  const t = rawTrack();
+  if (!t) return;
+  const caps = t.getCapabilities ? t.getCapabilities() : {};
+  const browser = {}, toDriver = {}, digital = {};
+  for (const [key, want] of Object.entries(set || {})) {
+    if (!want || typeof want !== "object") continue;
+    const b = BROWSER[key];
+    if (b && caps[b[2]]) {
+      if (b[3] && want.auto !== undefined && (caps[b[3]] || []).includes(want.auto ? "continuous" : "manual"))
+        browser[b[3]] = want.auto ? "continuous" : "manual";
+      if (want.value !== undefined && !want.auto) browser[b[2]] = Number(want.value);
+    } else if (driverKeys[key]) toDriver[driverKeys[key]] = want;
+    else if (["zoom", "pan", "tilt"].includes(key) && want.value !== undefined) digital[key] = Number(want.value);
+  }
+  // Gain (and exposure compensation) only hold with the exposure set by hand:
+  // on automatic, the camera sets them itself straight back.
+  if ((set.gain || set.exposureCompensation) && !set.exposure) {
+    const b = BROWSER.exposure;
+    if ((caps[b[3]] || []).includes("manual")) browser[b[3]] = "manual";
+    else if (driverKeys.exposure) toDriver.exposure = { auto: false };
+  }
+  if (Object.keys(browser).length) {
+    // The mode first (a camera on automatic ignores a value).
+    const modes = Object.fromEntries(Object.entries(browser).filter(([k]) => k.endsWith("Mode")));
+    if (Object.keys(modes).length) await t.applyConstraints({ advanced: [modes] }).catch(() => {});
+    await t.applyConstraints({ advanced: [browser] }).catch(() => {});
+  }
+  if (Object.keys(toDriver).length) await driver(toDriver);
+  if (Object.keys(digital).length) setView(digital);
+}
+
+// What's been set on this camera, kept on this PC.
+function remember(set) {
+  const key = deviceKey();
+  if (!key) return;
+  const look = loadJson("camLook-" + key) || {};
+  for (const [k, v] of Object.entries(set || {})) look[k] = { ...(look[k] || {}), ...v };
+  store("camLook-" + key, JSON.stringify(look));
+}
+async function restoreLook() {
+  setView({ zoom: 1, pan: 0, tilt: 0 });
+  const key = deviceKey();
+  if (!key) return;
+  if (!stored("camFactory-" + key)) {
+    // How the camera came, for Reset: what it's at before anything was set here.
+    const factory = {};
+    for (const c of await cameraControls()) if (!c.digital) factory[c.key] = { value: c.value, ...(c.auto !== null ? { auto: c.auto } : {}) };
+    store("camFactory-" + key, JSON.stringify(factory));
+  }
+  const look = loadJson("camLook-" + key);
+  if (look) await applySettings(look);
+}
+
+// One at a time, in order (a slider being dragged sends several a second),
+// answering only the latest of a run from the same control room.
+let controlChain = Promise.resolve();
+const controlsWaiting = {};
+function queueControl(m) {
+  controlsWaiting[m.from] = (controlsWaiting[m.from] || 0) + 1;
+  controlChain = controlChain.then(() => cameraControl(m)).catch(() => {}).finally(() => controlsWaiting[m.from]--);
+}
+
+async function cameraControl(m) {
+  if (m.reset) {
+    const key = deviceKey();
+    const factory = loadJson("camFactory-" + key) || {};
+    // Automatic where the camera has it, otherwise as it came.
+    for (const c of await cameraControls()) if (c.auto !== null && factory[c.key]) factory[c.key].auto = true;
+    await applySettings({ ...factory, zoom: { value: 1 }, pan: { value: 0 }, tilt: { value: 0 } });
+    store("camLook-" + key);
+  } else if (m.set) {
+    await applySettings(m.set);
+    remember(m.set);
+  }
+  if (controlsWaiting[m.from] > 1) return;   // (the next one answers)
+  // (what the camera's at now, not what was asked: give it a moment to take it)
+  if (m.set || m.reset) await sleep(300);
+  if (controlsWaiting[m.from] > 1) return;
+  const t = rawTrack();
+  await post("/api/cam/send", { to: m.from, from: ME, data: {
+    type: "camstate", pc: PC_ID, label: t ? t.label : "", controls: await cameraControls(),
+    seat, riot_id: riotId, app: APP,
+    why: { browser: t && t.getCapabilities ? Object.keys(t.getCapabilities()).filter(k => !["width", "height", "frameRate", "aspectRatio", "deviceId", "groupId", "resizeMode", "facingMode"].includes(k)) : [],
+           driver: driverError, agent: navigator.userAgent.replace(/^.*?(Edg\/[\d.]+|Chrome\/[\d.]+|Firefox\/[\d.]+).*$/, "$1") } } }).catch(() => {});
+}
+
+// --- talking to the HUD ----------------------------------------------------
+async function post(path, body) {
+  const r = await fetch(base + path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.error || r.status);
+  return data;
+}
+
+function gathered(pc) {
+  if (pc.iceGatheringState === "complete") return Promise.resolve();
+  return new Promise(resolve => {
+    pc.addEventListener("icegatheringstatechange", () => { if (pc.iceGatheringState === "complete") resolve(); });
+    setTimeout(resolve, 2500);
+  });
+}
+
+// WebRTC hides each PC's address behind a random "<id>.local" name, which only
+// resolves on that PC's own network: a cam on another network (VLAN) never
+// connects. The HUD passes on where each message came from (m.ip), and that
+// address goes in place of the hidden one.
+function unhide(sdp, ip, hubHost) {
+  if (ip && /^(127\.|::1$|::ffff:127\.)/.test(ip)) ip = /^localhost$/i.test(hubHost) ? "127.0.0.1" : hubHost;
+  if (!sdp || !ip || !/^\d+\.\d+\.\d+\.\d+$/.test(ip)) return sdp;
+  return sdp.replace(/^(a=candidate:\S+ \d+ \S+ \d+ )\S+\.local( \d+ typ host)/gm, `$1${ip}$2`);
+}
+
+async function answer(m) {
+  for (let i = 0; !stream && i < 50; i++) await sleep(200);
+  if (!stream) return;
+  if (viewers[m.from]) viewers[m.from].close();
+  const pc = new RTCPeerConnection({ iceServers: [] });
+  pc.preview = !!m.preview;   // (the GFX Engine's Camera Control Room shows every cam small)
+  viewers[m.from] = pc;
+  let lost = null;
+  const drop = () => { if (viewers[m.from] === pc) delete viewers[m.from]; pc.close(); drawSeat(); };
+  pc.onconnectionstatechange = () => {
+    clearTimeout(lost);
+    if (["failed", "closed"].includes(pc.connectionState)) drop();
+    // A viewer that's gone (a HUD page reloaded or closed without saying so)
+    // stops costing an encoder here after a few seconds.
+    else if (pc.connectionState === "disconnected") lost = setTimeout(drop, 8000);
+    drawSeat();
+  };
+  pc.addTrack(outTrack(), stream);
+  await pc.setRemoteDescription({ type: "offer", sdp: unhide(m.sdp, m.ip, new URL(base).hostname) });
+  preferH264(pc);
+  await pc.setLocalDescription(await pc.createAnswer());
+  for (const sender of pc.getSenders()) await tuneSender(sender, pc.preview);
+  await gathered(pc);
+  await post("/api/cam/send", { to: m.from, from: ME, data: { type: "answer", sdp: pc.localDescription.sdp } });
+}
+
+let wakeUp = null;
+function wake() { if (wakeUp) wakeUp(); }
+
+function handleVal(r) {
+  online = true;
+  matched = r.player || null;
+  status(!r.riot_id ? (GAME === "cod" || GAME === "rl" ? "Enter your in-game name to connect." : "Enter your Riot ID (Name#TAG) to connect.")
+         : matched ? `On the HUD at ${base} as ${matched.name} (${matched.team_name || matched.team})`
+         : `Connected to the HUD at ${base} as ${r.riot_id}. Your cam shows once you're in the match.`, r.riot_id ? "ok" : "");
+  for (const m of r.messages) {
+    if (m.type === "offer") answer(m).catch(() => {});
+    else if (m.type === "camctl") queueControl(m);
+    else if (m.type === "bye" && viewers[m.from]) { viewers[m.from].close(); delete viewers[m.from]; }
+    else if (m.type === "replaced") status(GAME === "cod" || GAME === "rl" ? "Your name connected from another PC." : "Your Riot ID connected from another PC.", "bad");
+  }
+  drawSeat();
+}
+
+function handle(r) {
+  if (byName()) return handleVal(r);
+  claim = false;
+  online = true;
+  teams = r.teams;
+  if (r.seat !== undefined && r.seat !== null && r.seat !== seat) { seat = r.seat; store("camSeat", seat); }
+  status(seat ? `Connected to the HUD at ${base}` : "Connected. Pick your team and role.", "ok");
+  for (const m of r.messages) {
+    if (m.type === "offer") answer(m).catch(() => {});
+    else if (m.type === "camctl") queueControl(m);
+    else if (m.type === "bye" && viewers[m.from]) { viewers[m.from].close(); delete viewers[m.from]; }
+    else if (m.type === "replaced") status("Another camera took this player's seat on the HUD.", "bad");
+  }
+  drawSeat();
+}
+
+async function loop() {
+  for (;;) {
+    base = APP ? gfxBase($("gfx").value) : location.origin;
+    if (!base) {
+      status("Enter the GFX PC's address (shown in its Outputs under \"From another PC\").");
+      await new Promise(r => (wakeUp = r));
+      continue;
+    }
+    try {
+      // A poll cut short by a change of seat or address still gets handled.
+      const body = byName()
+        ? { id: ME, riot_id: riotId, label: cameraLabel(), wait: online ? 20 : 0 }
+        : { id: ME, seat, claim, label: cameraLabel(), wait: online && !claim ? 20 : 0 };
+      const pending = post("/api/cam/poll", body).then(handle);
+      const woken = new Promise(res => (wakeUp = () => res("woken")));
+      await Promise.race([pending, woken]);
+    } catch (e) {
+      online = false;
+      status(e.message && !/fetch|network/i.test(e.message) ? e.message
+             : `Can't reach the HUD at ${base}. Check the address and that the GFX PC lets other PCs read the HUD.`, "bad");
+      await Promise.race([sleep(3000), new Promise(r => (wakeUp = r))]);
+    }
+  }
+}
+
+function cameraLabel() {
+  const t = stream && stream.getVideoTracks()[0];
+  return t ? t.label : "";
+}
+
+// Closing the window frees the seat straight away. (Plain text, so the
+// browser sends it to another PC without asking first.)
+addEventListener("pagehide", () => {
+  if (base && navigator.sendBeacon)
+    navigator.sendBeacon(base + "/api/cam/poll", new Blob([JSON.stringify(
+      byName() ? { id: ME, riot_id: "", wait: 0 } : { id: ME, seat: "", claim: true, wait: 0 })], { type: "text/plain" }));
+});
+
+async function start() {
+  if (!APP && !window.isSecureContext) {
+    // Opened by its http address from another PC: the camera needs the https one.
+    try {
+      const url = (await (await fetch("/api/state")).json()).app.cam_url;
+      if (url) {
+        // Same address the player used, on the https port.
+        const u = new URL(url);
+        u.hostname = location.hostname;
+        return location.replace(u.toString());
+      }
+    } catch (e) { /* fall through to the message below */ }
+  }
+  $("gfx").addEventListener("change", () => { store(`camGfx-${GAME}`, $("gfx").value.trim()); claim = !!seat; online = false; wake(); });
+  $("find").onclick = findHud;
+  if (APP) {
+    document.body.classList.add("picking");
+    await new Promise(resolve => {
+      for (const b of document.querySelectorAll("#picker button")) b.onclick = () => { pickGame(b.dataset.game); resolve(); };
+    });
+  } else pickGame("lol");
+  drawSeat();
+  if (APP) {
+    // The app allows this page the camera once its window is ready.
+    for (let i = 0; i < 25; i++) {
+      try { if ((await (await fetch("/api/state")).json()).app.camera_ready) break; } catch (e) {}
+      await sleep(200);
+    }
+  }
+  openCamera(stored("camDevice"));
+  loop();
+  if (APP) (async function updates() {
+    let busy = false;
+    try {
+      const u = (await (await fetch("/api/state")).json()).app.update;
+      showUpdate(u);
+      busy = ["checking", "downloading", "installing"].includes(u.status);
+    } catch (e) {}
+    setTimeout(updates, busy ? 1000 : 30000);   // (often only while an update's under way)
+  })();
+}
+// --- finding the HUD -------------------------------------------------------------
+// Connect to HUD looks on the network for the PC running this game's HUD;
+// with none found, it asks for the address.
+function useGfx(address) {
+  $("gfx").value = address;
+  $("found").hidden = true;
+  $("gfx").dispatchEvent(new Event("change"));
+}
+
+async function findHud() {
+  const button = $("find");
+  button.disabled = true;
+  button.textContent = "Searching…";
+  $("found").hidden = true;
+  status("Looking for the HUD on the network…");
+  let huds = [];
+  try { huds = (await (await fetch(`/api/find?game=${GAME}`)).json()).huds || []; } catch (e) {}
+  button.disabled = false;
+  button.textContent = "Connect to HUD";
+  if (huds.length === 1) return useGfx(huds[0].url);
+  if (huds.length > 1) {
+    status("More than one PC is running the HUD. Pick the GFX PC:");
+    $("found").innerHTML = "";
+    for (const h of huds) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.innerHTML = `${h.ip}<small>${h.teams || ""}</small>`;
+      b.onclick = () => useGfx(h.url);
+      $("found").appendChild(b);
+    }
+    $("found").hidden = false;
+    return;
+  }
+  const typed = prompt("No PC running the HUD was found on the network.\n\nEnter the GFX PC's address " +
+    "(ask the GFX operator; it's under Outputs > From another PC, and \"Let other PCs on the network read the HUD\" must be ticked).",
+    $("gfx").value.trim());
+  if (typed && typed.trim()) useGfx(typed.trim());
+  else status("No HUD found. Enter the GFX PC's address, or press Connect to HUD to look again.", "bad");
+}
+
+// --- the game -----------------------------------------------------------------
+function pickGame(game) {
+  const changed = GAME && GAME !== game;
+  GAME = game;
+  document.body.classList.remove("picking", "game-lol", "game-val", "game-cod", "game-rl");
+  document.body.classList.add(`game-${game}`);
+  $("game-logo").src = GAMES[game].logo;
+  // (The address used to be stored for League only.)
+  $("gfx").value = new URLSearchParams(location.search).get("gfx") || stored(`camGfx-${game}`)
+    || (game === "lol" ? stored("camGfx") || "" : "");
+  $("gfx").placeholder = `192.168.2.40${GAMES[game].port === 8777 ? "" : ":" + GAMES[game].port}`;
+  // (each game's own name: a Riot ID, or a Call of Duty name)
+  riotId = stored(NAME_KEY[game] || "camRiotId") || "";
+  if (APP && !$("gfx").value.trim()) findHud();
+  if (changed) {
+    // Leave the other game's HUD and start again on this one's.
+    for (const id of Object.keys(viewers)) { viewers[id].close(); delete viewers[id]; }
+    online = false;
+    claim = !!seat;
+    status("");
+    wake();
+  }
+}
+$("switch-game").onclick = () => {
+  document.body.classList.add("picking");
+  for (const b of document.querySelectorAll("#picker button")) b.onclick = () => pickGame(b.dataset.game);
+};
+
+// --- VALORANT: the player's Riot ID ------------------------------------------
+$("riot-id").value = riotId;
+function setRiotId(text) {
+  const clean = (text || "").trim().replace(/\s*#\s*/, "#");
+  $("riot-id").value = clean;
+  if (clean && !/^[^#]{1,16}#[^#]{1,5}$/.test(clean)) { status("Enter your Riot ID as Name#TAG (as shown in VALORANT).", "bad"); return; }
+  riotId = clean;
+  store("camRiotId", riotId || undefined);
+  online = false;
+  wake();
+}
+$("riot-id").addEventListener("change", e => setRiotId(e.target.value));
+function riotStatus(text, kind) { $("riot-status").textContent = text || ""; $("riot-status").className = "status " + (kind || ""); }
+// "Sign in with Riot": the Riot ID of the account signed in to the Riot
+// Client on this PC (opening the Riot Client to sign in when needed).
+// --- Call of Duty: the player's in-game name -----------------------------------
+$("cod-name").value = stored("camCodName") || "";
+$("cod-name").addEventListener("change", e => {
+  const clean = e.target.value.trim().replace(/\s*#.*$/, "").slice(0, 32);
+  e.target.value = clean;
+  riotId = clean;
+  store("camCodName", clean || undefined);
+  online = false;
+  wake();
+});
+
+// --- Rocket League: the player's in-game name ---------------------------------
+$("rl-name").value = stored("camRlName") || "";
+$("rl-name").addEventListener("change", e => {
+  const clean = e.target.value.trim().replace(/\s+/g, " ").slice(0, 32);
+  e.target.value = clean;
+  riotId = clean;
+  store("camRlName", clean || undefined);
+  online = false;
+  wake();
+});
+
+$("riot-sign-in").onclick = async () => {
+  const account = async () => (await fetch("/api/riot/account")).json();
+  riotStatus("Checking the Riot Client…");
+  let a = await account().catch(() => ({ error: "Couldn't check the Riot Client." }));
+  if (!a.riot_id && a.can_sign_in) {
+    await fetch("/api/riot/sign-in", { method: "POST" }).catch(() => {});
+    riotStatus("Sign in in the Riot Client window…");
+    for (let i = 0; i < 90 && !a.riot_id; i++) { await sleep(2000); a = await account().catch(() => a); }
+  }
+  if (a.riot_id) { riotStatus(`Signed in as ${a.riot_id}`, "ok"); setRiotId(a.riot_id); }
+  else riotStatus(a.error || "Couldn't get your Riot ID: type it instead.", "bad");
+};
+
+start();
+</script>
+</body>
+</html>
