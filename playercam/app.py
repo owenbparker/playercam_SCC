@@ -424,8 +424,15 @@ def main():
     os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = "--use-fake-ui-for-media-stream"
     try:
         import webview
-        window = webview.create_window(f"{TITLE} {updater.current}", url, width=960, height=680,
-                                       min_size=(520, 560), background_color="#0e1012")
+        # owen's size (2026-11-13): tall enough that every step shows without
+        # scrolling; shorter only on a screen that can't fit it.
+        width, height = 490, 930
+        try:
+            height = min(height, max(560, webview.screens[0].height - 80))
+        except Exception:
+            pass
+        window = webview.create_window(f"{TITLE} {updater.current}", url, width=width, height=height,
+                                       min_size=(400, 560), background_color="#0c0c0e")
         updater.on_exit = window.destroy
 
         def loaded():
