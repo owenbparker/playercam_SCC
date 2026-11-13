@@ -424,8 +424,8 @@ def main():
     os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = "--use-fake-ui-for-media-stream"
     try:
         import webview
-        window = webview.create_window(f"{TITLE} {updater.current}", url, width=960, height=680,
-                                       min_size=(520, 560), background_color="#0e1012")
+        window = webview.create_window(f"{TITLE} {updater.current}", url, width=460, height=800,
+                                       min_size=(400, 560), background_color="#0c0c0e")
         updater.on_exit = window.destroy
 
         def loaded():
