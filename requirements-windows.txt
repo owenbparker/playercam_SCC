@@ -1,0 +1,2 @@
+# The desktop window (Windows: Edge WebView2). The app itself only needs Python's standard library.
+pywebview

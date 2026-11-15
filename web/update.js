@@ -1,0 +1,81 @@
+// Update button for every screen (start, GFX controller, observer client).
+// It reads "Check for updates" until a newer release is found, then
+// "Update to vX". Call updateButton(button, version) once, then pass it
+// state.app.update each time the state is fetched.
+function updateButton(button, version) {
+  let info = null, noteUntil = 0, note = "";
+
+  async function post(url) {
+    const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    const data = await r.json();
+    if (data.error) alert(data.error);
+    else render(data.app.update);
+  }
+
+  function render(u) {
+    info = u;
+    version.textContent = u.current === "dev" ? "dev build" : u.current;
+    button.hidden = false;
+    button.disabled = false;
+    button.title = "";
+    button.classList.remove("error", "check");
+    if (u.status === "downloading") { button.disabled = true; button.textContent = `Downloading update ${u.progress}%`; }
+    else if (u.status === "installing") { button.disabled = true; button.textContent = "Installing - restarting…"; }
+    else if (u.status === "error") { button.classList.add("error"); button.textContent = "Update failed - retry"; button.title = u.error || ""; }
+    else if (u.available && u.can_install) { button.textContent = `⬆ Update to ${u.latest}`; button.title = u.notes || ""; }
+    else {
+      button.classList.add("check");
+      if (u.status === "checking") { button.disabled = true; button.textContent = "Checking…"; }
+      else button.textContent = Date.now() < noteUntil ? note : "Check for updates";
+    }
+  }
+
+  button.onclick = async () => {
+    const u = info;
+    if (!u) return;
+    if ((u.available && u.can_install) || u.status === "error") {
+      const notes = u.notes ? `\n\nWhat's new:\n${u.notes.slice(0, 600)}` : "";
+      const failed = u.status === "error" ? `The last attempt failed: ${u.error}\n\n` : "";
+      const name = u.name || "League HUD";
+      const kept = name === "League HUD" ? "the HUD pauses while it restarts. Your settings, logos and output files are kept."
+                                         : "your settings are kept.";
+      if (confirm(`${failed}Install ${name} ${u.latest} now?\n\nThe app will close and reopen (about 10 seconds); ${kept}${notes}`))
+        post("/api/update/install");
+      return;
+    }
+    button.disabled = true;
+    button.textContent = "Checking…";
+    await post("/api/update/check");
+    if (info && !info.available && info.status !== "error") {
+      note = info.check_error ? "Couldn't check - retry" : "✓ Up to date";
+      noteUntil = Date.now() + 4000;
+      render(info);
+      if (info.check_error) button.title = info.check_error;
+      setTimeout(() => info && render(info), 4100);
+    }
+  };
+  // "Go back to vX": the version the last update replaced, kept beside the
+  // app. Shown once there is one; restarts the app into it.
+  const back = document.createElement("button");
+  back.type = "button";
+  back.className = button.className;
+  back.classList.add("check", "go-back");
+  back.hidden = true;
+  back.style.marginLeft = "6px";
+  button.after(back);
+  back.onclick = () => {
+    const u = info;
+    if (!u || !u.previous) return;
+    if (confirm(`Go back to ${u.previous}?\n\nThis puts back the version you had before the last update. The app will close and reopen (about 10 seconds). Your settings and files are kept.`))
+      post("/api/update/rollback");
+  };
+  const drawButton = render;
+  render = function (u) {
+    drawButton(u);
+    back.hidden = !(u.previous && u.can_install) || u.status === "downloading" || u.status === "installing";
+    back.textContent = `↩ Go back to ${u.previous || ""}`;
+    if (u.channel === "test") version.textContent += " (test builds)";
+    if (u.busy && u.available) button.title = `${u.busy}: update once it's over`;
+  };
+  return render;
+}
