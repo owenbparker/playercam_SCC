@@ -189,6 +189,8 @@ def make_handler(updater):
                     updater.check()
                 elif path == "/api/update/install":
                     updater.install_in_background()
+                elif path == "/api/update/rollback":
+                    updater.rollback_in_background()
                 elif path == "/api/riot/sign-in":
                     open_riot_client()
                     return self._send(json.dumps({"ok": True}))

@@ -5,6 +5,8 @@
 # (up to v1.0.89); 2.0 keeps those installs updating to this repo's releases.
 #
 # A commit with [no release] in its message builds and tests without publishing.
+# Only pushes to main publish a normal release; other branches publish a
+# test build (pre-release) that installed apps never update to.
 name: Build Windows app
 
 on:
@@ -22,6 +24,11 @@ concurrency:
 jobs:
   build:
     runs-on: windows-latest
+    env:
+      # Only main makes a normal (stable) release, the one installed apps update to.
+      # Any other branch publishes a test build: a GitHub pre-release, which the
+      # apps' update check (releases/latest) and the installer never pick up.
+      CHANNEL: ${{ github.ref == 'refs/heads/main' && 'stable' || 'test' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -95,7 +102,8 @@ jobs:
           Compress-Archive -Path dist\PlayerCam\* -DestinationPath PlayerCam-windows.zip
           $notes = git log -1 --format=%B | Where-Object { $_ -notmatch '^(Co-Authored-By|Claude-Session):' }
           $notes = ($notes -join "`n").Trim()
-          gh release create "$env:VERSION" PlayerCam-windows.zip dist\SCC-Player-Cam-Setup.exe --target "${{ github.sha }}" --title "SCC Player Cam $env:VERSION" --notes "$notes"
+          $pre = @(); if ($env:CHANNEL -eq 'test') { $pre = @('--prerelease'); $notes = "Test build from ${{ github.ref_name }}: installed apps don't update to it.`n`n" + $notes }
+          gh release create "$env:VERSION" PlayerCam-windows.zip dist\SCC-Player-Cam-Setup.exe --target "${{ github.sha }}" --title "SCC Player Cam $env:VERSION" --notes "$notes" @pre
         env:
           GH_TOKEN: ${{ github.token }}
 
